@@ -20,13 +20,85 @@ interface IRequest {
 @injectable()
 class CreateOrderService {
   constructor(
+    @inject('OrdersRepository')
     private ordersRepository: IOrdersRepository,
+
+    @inject('ProductsRepository')
     private productsRepository: IProductsRepository,
+
+    @inject('CustomersRepository')
     private customersRepository: ICustomersRepository,
   ) {}
 
   public async execute({ customer_id, products }: IRequest): Promise<Order> {
-    // TODO
+    const customer = await this.customersRepository.findById(customer_id);
+
+    if (!customer) {
+      throw new AppError('Customer not found');
+    }
+
+    const productsIds = products.map(({ id }) => ({
+      id,
+    }));
+
+    const foundProducts = await this.productsRepository.findAllById(
+      productsIds,
+    );
+
+    if (!foundProducts) {
+      throw new AppError('Could not find any of the requested products');
+    }
+
+    const missingProductsIds = productsIds.filter(
+      ({ id }) => !foundProducts.find(foundProduct => foundProduct.id === id),
+    );
+
+    if (missingProductsIds.length) {
+      throw new AppError(
+        `Could not find the product(s) with the following id(s): ${missingProductsIds.join(
+          ', ',
+        )}`,
+      );
+    }
+
+    const productsStocksAndPricesById = Object.assign(
+      {},
+      ...foundProducts.map(({ id, quantity, price }) => ({
+        [id]: { stock: quantity, price },
+      })),
+    );
+
+    const insufficientQuantityProducts = products.filter(
+      ({ id, quantity }) => quantity > productsStocksAndPricesById[id].stock,
+    );
+
+    if (insufficientQuantityProducts.length) {
+      throw new AppError(
+        `Product(s) with insufficient stock: ${insufficientQuantityProducts
+          .map(({ id }) => id)
+          .join(', ')}`,
+      );
+    }
+
+    const order_products = products.map(({ id, quantity }) => ({
+      product_id: id,
+      quantity,
+      price: productsStocksAndPricesById[id].price,
+    }));
+
+    const order = await this.ordersRepository.create({
+      customer,
+      products: order_products,
+    });
+
+    await this.productsRepository.updateQuantity(
+      products.map(({ id, quantity }) => ({
+        id,
+        quantity: productsStocksAndPricesById[id].stock - quantity,
+      })),
+    );
+
+    return order;
   }
 }
 
